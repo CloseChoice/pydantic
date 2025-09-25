@@ -8,7 +8,7 @@ from typing import Annotated, Any, Callable, Union
 
 import pytest
 import pytz
-from annotated_types import Interval
+from annotated_types import Interval, Predicate, Timezone
 
 from pydantic import TypeAdapter, ValidationError
 from pydantic.experimental.pipeline import _Pipeline, transform, validate_as  # pyright: ignore[reportPrivateUsage]
@@ -420,3 +420,104 @@ def test_validate_as_ellipsis_preserves_other_steps() -> None:
     ta = TypeAdapter[float](Annotated[float, validate_as(str).transform(lambda v: v.split()[0]).validate_as(...)])
 
     assert ta.validate_python('12 ab') == 12.0
+
+
+def test_timezone_aware_constraint_non_datetime_schema() -> None:
+    """
+    Test timezone aware constraint on a non-datetime schema.
+    This should hit lines 558-562 in pipeline.py (check_tz_aware function).
+    """
+    # Create a pipeline where we transform to datetime but don't have datetime schema type
+    # This forces the timezone constraint to use the check_tz_aware function
+    ta = TypeAdapter[datetime.datetime](
+        Annotated[
+            datetime.datetime,
+            validate_as(str).transform(lambda s: datetime.datetime.fromisoformat(s)).constrain(Timezone(...)),
+        ]
+    )
+
+    # Test with timezone-aware datetime string
+    aware_dt = datetime.datetime(2023, 1, 1, 12, 0, 0, tzinfo=pytz.UTC)
+    result = ta.validate_python(aware_dt.isoformat())
+    assert result.tzinfo is not None
+
+    # Test with timezone-naive datetime string (should fail)
+    naive_dt = datetime.datetime(2023, 1, 1, 12, 0, 0)
+    with pytest.raises(ValidationError, match='timezone aware'):
+        ta.validate_python(naive_dt.isoformat())
+
+
+def test_timezone_naive_constraint_non_datetime_schema() -> None:
+    """
+    Test timezone naive constraint on a non-datetime schema.
+    This should hit lines 569-573 in pipeline.py (check_tz_naive function).
+    """
+    # Create a pipeline where we transform to datetime but don't have datetime schema type
+    # This forces the timezone constraint to use the check_tz_naive function
+    ta = TypeAdapter[datetime.datetime](
+        Annotated[
+            datetime.datetime,
+            validate_as(str).transform(lambda s: datetime.datetime.fromisoformat(s)).constrain(Timezone(None)),
+        ]
+    )
+
+    # Test with timezone-naive datetime string
+    naive_dt = datetime.datetime(2023, 1, 1, 12, 0, 0)
+    result = ta.validate_python(naive_dt.isoformat())
+    assert result.tzinfo is None
+
+    # Test with timezone-aware datetime string (should fail)
+    aware_dt = datetime.datetime(2023, 1, 1, 12, 0, 0, tzinfo=pytz.UTC)
+    with pytest.raises(ValidationError, match='timezone naive'):
+        ta.validate_python(aware_dt.isoformat())
+
+
+def test_predicate_constraint_named_function() -> None:
+    """
+    Test predicate constraint with a named function (not lambda).
+    This should hit line 605 in pipeline.py (func.__name__ path).
+    """
+
+    def is_positive(value: int) -> bool:
+        """Check if value is positive."""
+        return value > 0
+
+    # Use a named function instead of a lambda to trigger the func.__name__ path
+    ta = TypeAdapter[int](Annotated[int, validate_as(int).constrain(Predicate(is_positive))])
+
+    # Test valid case
+    assert ta.validate_python(5) == 5
+    assert ta.validate_python(1) == 1
+
+    # Test invalid case - should include function name in error
+    with pytest.raises(ValidationError, match='is_positive'):
+        ta.validate_python(-1)
+
+    with pytest.raises(ValidationError, match='is_positive'):
+        ta.validate_python(0)
+
+
+def test_predicate_constraint_named_function_via_predicate_method() -> None:
+    """
+    Test predicate constraint using the .predicate() method with a named function.
+    This also covers line 605 in pipeline.py.
+    """
+
+    def is_even(value: int) -> bool:
+        """Check if value is even."""
+        return value % 2 == 0
+
+    # Use the predicate() method with a named function
+    ta = TypeAdapter[int](Annotated[int, validate_as(int).predicate(is_even)])
+
+    # Test valid cases
+    assert ta.validate_python(2) == 2
+    assert ta.validate_python(0) == 0
+    assert ta.validate_python(-4) == -4
+
+    # Test invalid cases
+    with pytest.raises(ValidationError, match='is_even'):
+        ta.validate_python(1)
+
+    with pytest.raises(ValidationError, match='is_even'):
+        ta.validate_python(3)
