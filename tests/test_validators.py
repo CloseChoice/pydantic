@@ -1111,6 +1111,60 @@ def test_validation_each_item_tuple():
     assert Model(foobar=(1, 2, 1)).foobar == (2, 3, 2)
 
 
+def test_validation_each_item_tuple_comprehensive():
+    """Test comprehensive tuple each_item validation scenarios to ensure coverage of variadic_item_index path."""
+    with pytest.warns(PydanticDeprecatedSince20, match=V1_VALIDATOR_DEPRECATION_MATCH):
+
+        class ModelBare(BaseModel):
+            items: tuple
+
+            @validator('items', each_item=True)
+            @classmethod
+            def validate_each_item(cls, v: Any) -> Any:
+                return str(v) + '_validated'
+
+    # Test bare tuple (should have variadic_item_index=0)
+    model = ModelBare(items=(1, 2, 'hello'))
+    assert model.items == ('1_validated', '2_validated', 'hello_validated')
+
+    with pytest.warns(PydanticDeprecatedSince20, match=V1_VALIDATOR_DEPRECATION_MATCH):
+
+        class ModelMultipleValidators(BaseModel):
+            items: tuple[int, ...]
+
+            @validator('items', each_item=True)
+            @classmethod
+            def add_ten(cls, v: Any) -> int:
+                return v + 10
+
+            @validator('items', each_item=True)
+            @classmethod
+            def multiply_three(cls, v: Any) -> int:
+                return v * 3
+
+    # Test multiple each_item validators on variadic tuple
+    model = ModelMultipleValidators(items=(1, 2, 3))
+    assert model.items == (33, 36, 39)  # (1+10)*3=33, (2+10)*3=36, (3+10)*3=39
+
+    with pytest.warns(PydanticDeprecatedSince20, match=V1_VALIDATOR_DEPRECATION_MATCH):
+
+        class ModelEmpty(BaseModel):
+            items: tuple[str, ...]
+
+            @validator('items', each_item=True)
+            @classmethod
+            def uppercase(cls, v: Any) -> str:
+                return str(v).upper()
+
+    # Test empty tuple with each_item validator
+    model = ModelEmpty(items=())
+    assert model.items == ()
+
+    # Test single item
+    model = ModelEmpty(items=('hello',))
+    assert model.items == ('HELLO',)
+
+
 def test_validation_each_item_invalid_type():
     with pytest.raises(
         TypeError, match=re.escape('@validator(..., each_item=True)` cannot be applied to fields with a schema of int')
